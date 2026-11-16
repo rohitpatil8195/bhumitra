@@ -1,70 +1,28 @@
-# Getting Started with Create React App
+# BhuMitra Explorer
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+A React cadastral explorer for Maharashtra. District, taluka, village and parcel data are loaded from the documented MRSAC Lambda API. Google Maps renders the map and parcel boundaries.
 
-## Available Scripts
+## Run locally
 
-In the project directory, you can run:
+```sh
+npm install
+npm start
+```
 
-### `npm start`
+`npm start` starts both the React app and its local API proxy on port 4242, so the MRSAC dropdowns work without starting a second process.
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+To enable the interactive Google map with parcel overlays, create a Google Maps JavaScript API key, enable Maps JavaScript API and set its website referrer restrictions. Put `REACT_APP_GOOGLE_MAPS_API_KEY=your_key` in `.env.local` before starting the React app. Without the key, the app shows a Google Maps embed; parcel overlays need the JavaScript API key.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+Payment currently runs in test mode by default: clicking Continue marks access as active without making a charge. To switch to Razorpay checkout, set `REACT_APP_PAYMENT_TEST_MODE=false` in `.env.local`, then provide test or live credentials to the server:
 
-### `npm test`
+```sh
+REACT_APP_PAYMENT_TEST_MODE=false RAZORPAY_KEY_ID=rzp_test_... RAZORPAY_KEY_SECRET=... npm start
+```
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+The React development server proxies `/api` to `http://localhost:4242`. The Node server proxies `/api/mrsac/*` to the documented Lambda Function URL, avoiding the Lambda CORS origin restriction during local development. Set `MRSAC_API_BASE` if your Lambda Function URL changes. The PDF documents `GET /api/health`, `/api/districts`, `/api/stats`, `/api/talukas?district=…`, `/api/villages?district=…&taluka=…`, and `/api/plots?district=…&taluka=…&village=…`. The UI passes metadata IDs through as strings to preserve leading zeros.
 
-### `npm run build`
+`RAZORPAY_KEY_SECRET` stays on the server. Set `RAZORPAY_AMOUNT_PAISE` to change the server controlled checkout price (defaults to ₹99). The payment API returns a verified signature, but production access entitlement should be granted from a server side webhook after confirming the payment status with Razorpay.
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+For production, deploy the React build and the Node API behind the same origin or configure a reverse proxy for `/api`. Set `APP_ORIGIN` to your site origin if the API is called cross-origin. Keep the Razorpay secret in the server environment, never in a `REACT_APP_*` variable.
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
-
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
-
-### `npm run eject`
-
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
-
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
-
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
-
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+The Lambda Function URL authentication mode should be confirmed with its owner as noted in the API reference. Parcel area and PIN values are displayed as supplied by the source and are not certified land records.
