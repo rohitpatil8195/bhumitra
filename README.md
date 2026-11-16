@@ -11,7 +11,7 @@ npm start
 
 `npm start` starts both the React app and its local API proxy on port 4242, so the MRSAC dropdowns work without starting a second process.
 
-On Vercel, `api/mrsac/[...path].js` provides the same server-side MRSAC proxy for district, taluka, village, and parcel requests. Set `MRSAC_API_BASE` in the Vercel project only if the upstream Lambda URL changes.
+On Vercel, the `api/mrsac/` functions provide the same server-side MRSAC proxy for district, taluka, village, and parcel requests. Set `MRSAC_API_BASE` in the Vercel project only if the upstream Lambda URL changes.
 
 To enable the interactive Google map with parcel overlays, create a Google Maps JavaScript API key, enable Maps JavaScript API and set its website referrer restrictions. Put `REACT_APP_GOOGLE_MAPS_API_KEY=your_key` in `.env.local` before starting the React app. Without the key, the app shows a Google Maps embed; parcel overlays need the JavaScript API key.
 
