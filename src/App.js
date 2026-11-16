@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 
 const API_BASE = '/api/mrsac';
+// Drawing every polygon (and a label marker for each one) can overwhelm the
+// browser for villages with very large cadastral datasets.
+const MAX_MAP_PARCELS = 500;
+const MAX_MAP_LABELS = 100;
 const districts = [
   'Ahmednagar', 'Akola', 'Amravati', 'Aurangabad', 'Bhandara', 'Bid', 'Buldana',
   'Chandrapur', 'Dhule', 'Gadchiroli', 'Gondiya', 'Hingoli', 'Jalgaon', 'Jalna',
@@ -66,9 +70,14 @@ function App() {
   basemapRef.current = basemap;
   const mapRef = useRef(null);
   const parcels = useMemo(() => sampleData.filter(p => !query || p.pin.toLowerCase().includes(query.toLowerCase())), [query, sampleData]);
-  const parcelsRef = useRef(parcels);
+  const mapParcels = useMemo(() => {
+    const visible = sampleData.slice(0, MAX_MAP_PARCELS);
+    if (selected && !visible.some(parcel => parcel.pin === selected.pin)) visible.push(selected);
+    return visible;
+  }, [sampleData, selected]);
+  const parcelsRef = useRef(mapParcels);
   const fillRef = useRef(fill);
-  parcelsRef.current = parcels;
+  parcelsRef.current = mapParcels;
   fillRef.current = fill;
 
   useEffect(() => {
@@ -149,25 +158,42 @@ function App() {
         map.setMapTypeId(type === 'satellite' ? 'hybrid' : 'roadmap');
         map.setOptions({ styles: type === 'none' ? [{ featureType: 'all', elementType: 'labels', stylers: [{ visibility: 'off' }] }, { featureType: 'all', elementType: 'geometry', stylers: [{ color: '#edf1ed' }] }] : type === 'satellite' ? [] : [{ featureType: 'poi', stylers: [{ visibility: 'off' }] }] });
       };
+      map.data.addListener('click', event => {
+        const parcel = mapRef.current._parcelById?.get(String(event.feature.getId()));
+        if (parcel) setSelected({ ...parcel, position: event.latLng });
+      });
       mapRef.current._drawParcels = (features, showFill) => {
         mapRef.current._parcelFeatures = features;
-        (mapRef.current._parcelOverlays || []).forEach(item => item.setMap(null));
-        const overlays = [], bounds = new google.maps.LatLngBounds();
-        features.forEach((p, i) => {
+        (mapRef.current._parcelLabels || []).forEach(item => item.setMap(null));
+        map.data.forEach(feature => map.data.remove(feature));
+        const labelsForMap = [], bounds = new google.maps.LatLngBounds();
+        const byPin = new Map();
+        const geojson = { type: 'FeatureCollection', features: features.map((p, i) => {
           const center = map.getCenter(), x = (p.x - 50) / 85000, y = (50 - p.y) / 85000, dx = p.w / 85000, dy = p.h / 85000;
           const geometry = p.geometry || { type: 'Polygon', coordinates: [[[center.lng() + x, center.lat() + y], [center.lng() + x + dx, center.lat() + y + .00004], [center.lng() + x + dx * 1.04, center.lat() + y - dy], [center.lng() + x + dx * .1, center.lat() + y - dy * 1.03], [center.lng() + x, center.lat() + y]]] };
-          const rings = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.type === 'MultiPolygon' ? geometry.coordinates : [];
-          const props = { ...p.properties, ...p, i };
-          rings.forEach(polygonRings => {
-            const paths = polygonRings.map(ring => ring.map(([lng, lat]) => { const point = { lat: Number(lat), lng: Number(lng) }; if (Number.isFinite(point.lat) && Number.isFinite(point.lng)) bounds.extend(point); return point; }));
-            const isSelected = selectedRef.current?.pin === props.pin;
-            const polygon = new google.maps.Polygon({ map, paths, strokeColor: '#39735e', strokeOpacity: .95, strokeWeight: 1.7, fillColor: isSelected ? '#dda54e' : '#a8c992', fillOpacity: isSelected ? .5 : (showFill ? .54 : 0), clickable: true });
-            polygon.addListener('click', event => { props.position = event.latLng; setSelected({ ...props, position: event.latLng }); }); overlays.push(polygon);
-            const outerRing = paths[0];
-            if (labelsRef.current && outerRing?.length) { const marker = new google.maps.Marker({ map, position: outerRing[Math.floor(outerRing.length / 2)], label: { text: String(props.pin || ''), color: '#345843', fontSize: '10px', fontWeight: '600' }, icon: { path: google.maps.SymbolPath.CIRCLE, scale: 0, fillOpacity: 0, strokeOpacity: 0 }, clickable: false }); overlays.push(marker); }
-          });
+          const pin = String(p.pin || p.properties?.PIN || '');
+          byPin.set(String(i), p);
+          const collect = points => {
+            if (!Array.isArray(points)) return;
+            if (points.length >= 2 && typeof points[0] === 'number' && typeof points[1] === 'number') {
+              const lng = Number(points[0]), lat = Number(points[1]);
+              if (Number.isFinite(lat) && Number.isFinite(lng)) bounds.extend({ lat, lng });
+              return;
+            }
+            points.forEach(collect);
+          };
+          collect(geometry.coordinates);
+          const outerRing = geometry.type === 'Polygon' ? geometry.coordinates?.[0] : geometry.coordinates?.[0]?.[0];
+          if (i < MAX_MAP_LABELS && outerRing?.length) labelsForMap.push({ pin, position: { lat: Number(outerRing[0][1]), lng: Number(outerRing[0][0]) } });
+          return { type: 'Feature', id: String(i), properties: { PIN: pin }, geometry };
+        }) };
+        mapRef.current._parcelById = byPin;
+        map.data.addGeoJson(geojson);
+        map.data.setStyle(feature => {
+          const isSelected = String(feature.getProperty('PIN') || '') === selectedRef.current?.pin;
+          return { strokeColor: '#39735e', strokeOpacity: .95, strokeWeight: 1.7, fillColor: isSelected ? '#dda54e' : '#a8c992', fillOpacity: isSelected ? .5 : (showFill ? .54 : 0), clickable: true };
         });
-        mapRef.current._parcelOverlays = overlays;
+        mapRef.current._parcelLabels = labelsRef.current ? labelsForMap.map(item => new google.maps.Marker({ map, position: item.position, label: { text: item.pin, color: '#345843', fontSize: '10px', fontWeight: '600' }, icon: { path: google.maps.SymbolPath.CIRCLE, scale: 0, fillOpacity: 0, strokeOpacity: 0 }, clickable: false })) : [];
         if (!bounds.isEmpty()) mapRef.current._parcelBounds = bounds;
       };
       mapRef.current._fitParcels = () => {
@@ -202,7 +228,7 @@ function App() {
   }, []); // Google map is initialized once.
 
   useEffect(() => { mapRef.current?._setBasemap?.(basemap); }, [basemap]);
-  useEffect(() => { mapRef.current?._drawParcels?.(parcels, fill); }, [parcels, fill, selected, labels]);
+  useEffect(() => { mapRef.current?._drawParcels?.(mapParcels, fill); }, [mapParcels, fill, labels]);
   useEffect(() => { mapRef.current?._focusParcel?.(selected); }, [selected]);
 
   // Typing a complete PIN/survey number selects its API feature, including its
@@ -263,7 +289,7 @@ function App() {
           <div className="inline-status"><span className="status-check"><Icon name="check" size={13}/></span><span>{notice || 'Choose a village to load its parcel map.'}</span></div>
         </section>
         <section className="loaded-card"><div className="loaded-icon"><Icon name="map"/></div><div><strong>{loaded ? parcels.length : 0}</strong><span>PARCELS LOADED</span></div><span className="mini-tag">{loading === 'plots' ? 'LOADING' : loaded ? 'MRSAC' : 'READY'}</span></section>
-        {loaded && <section className="survey-list"><div className="eyebrow">SURVEY NUMBERS / PIN</div><div className="survey-pills">{parcels.slice(0, 100).map(parcel => <button className={selected?.pin === parcel.pin ? 'active' : ''} key={parcel.pin} onClick={() => setSelected(parcel)}>{parcel.pin}</button>)}</div>{parcels.length > 100 && <p>Showing the first 100 survey numbers. Use search to narrow the list.</p>}</section>}
+        {loaded && <section className="survey-list"><div className="eyebrow">SURVEY NUMBERS / PIN</div><div className="survey-pills">{parcels.slice(0, 100).map(parcel => <button className={selected?.pin === parcel.pin ? 'active' : ''} key={parcel.pin} onClick={() => setSelected(parcel)}>{parcel.pin}</button>)}</div>{parcels.length > 100 && <p>Showing the first 100 matches. Use search to narrow the list.</p>}{sampleData.length > MAX_MAP_PARCELS && <p>For performance, the map draws the first {MAX_MAP_PARCELS} boundaries. Searching for a survey number also draws that boundary.</p>}</section>}
         <section className="section map-settings"><div className="section-heading"><span className="eyebrow">MAP SETTINGS</span><Icon name="layers" size={17}/></div>
           <label>Parcel / survey identifier</label><div className="search-box"><Icon name="search" size={17}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search PIN in loaded parcels…"/></div>
           <div className="result-row"><span>{parcels.length} parcels shown</span><button onClick={() => setQuery('')}>Reset filters</button></div>
@@ -272,7 +298,7 @@ function App() {
           <div className="switch-row"><span>Gat / Gut labels <small>(source PIN)</small></span><button aria-label="Toggle parcel labels" className={`switch ${labels ? 'on' : ''}`} onClick={() => setLabels(!labels)}><i/></button></div>
           <button className="fit-button" onClick={() => mapRef.current?._fitParcels?.()}><Icon name="compass" size={17}/> Fit visible boundaries</button>
         </section>
-        <section className="section details-section"><div className="eyebrow">03 / PARCEL DETAILS</div>{selected ? <><div className="parcel-title">Parcel {selected.pin}</div><p className="place-line">{districtsList.find(d => String(d.id) === String(district))?.name || district || 'Pune'} / {talukasList.find(t => String(t.id) === String(taluka))?.name || taluka || 'Haveli'} / {villagesList.find(v => String(v.id) === String(village))?.name || village || 'Wagholi'}</p><div className="parcel-actions"><a href={`https://www.google.com/maps/search/?api=1&query=${selected.position ? `${selected.position.lat()},${selected.position.lng()}` : '19.1,75.5'}`} target="_blank" rel="noreferrer"><Icon name="pin" size={14}/> Open in Google Maps ↗</a><button onClick={() => navigator.clipboard?.writeText(`https://www.google.com/maps/search/?api=1&query=${selected.position ? `${selected.position.lat()},${selected.position.lng()}` : '19.1,75.5'}`)}>Copy link</button></div><div className="attr-grid"><span>PIN / SURVEY</span><b>{selected.pin}</b><span>AREA</span><b>{selected.area}</b><span>VILLAGE</span><b>{villagesList.find(v => String(v.id) === String(village))?.name || village || 'Wagholi'}</b></div><button className="clear-selection" onClick={() => setSelected(null)}>Clear selection</button></> : <div className="empty-detail"><span className="empty-gem">◇</span><div><strong>Select a boundary</strong><p>Click a polygon on the map to see its source attributes.</p></div></div>}</section>
+        <section className="section details-section"><div className="eyebrow">03 / PARCEL DETAILS</div>{selected ? <><div className="parcel-title">Parcel {selected.pin}</div><p className="place-line">{districtsList.find(d => String(d.id) === String(district))?.name || district || 'Pune'} / {talukasList.find(t => String(t.id) === String(taluka))?.name || taluka || 'Haveli'} / {villagesList.find(v => String(v.id) === String(village))?.name || village || 'Wagholi'}</p><div className="parcel-actions"><a href={`https://www.google.com/maps/search/?api=1&query=${selected.position ? `${selected.position.lat()},${selected.position.lng()}` : '19.1,75.5'}`} target="_blank" rel="noreferrer"><Icon name="pin" size={14}/> Open in Google Maps ↗</a><a href={`https://www.google.com/maps/dir/?api=1&destination=${selected.position ? `${selected.position.lat()},${selected.position.lng()}` : '19.1,75.5'}&travelmode=driving`} target="_blank" rel="noreferrer"><Icon name="arrow" size={14}/> Navigate ↗</a><button onClick={() => navigator.clipboard?.writeText(`https://www.google.com/maps/search/?api=1&query=${selected.position ? `${selected.position.lat()},${selected.position.lng()}` : '19.1,75.5'}`)}>Copy link</button></div><div className="attr-grid"><span>PIN / SURVEY</span><b>{selected.pin}</b><span>AREA</span><b>{selected.area}</b><span>VILLAGE</span><b>{villagesList.find(v => String(v.id) === String(village))?.name || village || 'Wagholi'}</b></div><button className="clear-selection" onClick={() => setSelected(null)}>Clear selection</button></> : <div className="empty-detail"><span className="empty-gem">◇</span><div><strong>Select a boundary</strong><p>Click a polygon on the map to see its source attributes.</p></div></div>}</section>
       <section className="note-card"><strong>A map, with context.</strong><p>Parcel areas and identifiers are shown as supplied. Cadastral geometry is not a certified land record.</p><button onClick={() => { setLoaded(false); setVillage(''); setSelected(null); setSampleData([]); setNotice('Map cleared. Choose a village to begin.'); }}>Clear loaded data</button></section>
       </div>
       <footer className="side-footer"><span className="live-dot"/> MRSAC cadastral explorer <span>WGS 84</span></footer>
