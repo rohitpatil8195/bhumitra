@@ -12,8 +12,8 @@ const districts = [
 ];
 const fallbackDistricts = districts.map(name => ({ id: `sample-${name.toLowerCase().replace(/[^a-z]+/g, '-')}`, name }));
 
-async function apiGet(path) {
-  const response = await fetch(`${API_BASE}${path}`);
+async function apiGet(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, options);
   if (!response.ok) {
     let message = `API error: ${response.status}`;
     try { message = (await response.json()).error || message; } catch { /* keep HTTP error */ }
@@ -42,6 +42,8 @@ function App() {
   const [districtsList, setDistrictsList] = useState(fallbackDistricts);
   const [taluka, setTaluka] = useState('');
   const [talukasList, setTalukasList] = useState([]);
+  const [talukaError, setTalukaError] = useState('');
+  const [talukaRetry, setTalukaRetry] = useState(0);
   const [village, setVillage] = useState('');
   const [villagesList, setVillagesList] = useState([]);
   const [query, setQuery] = useState('');
@@ -80,16 +82,36 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!district) { setTalukasList([]); return; }
-    if (!/^\d{1,15}$/.test(district)) { setTalukasList([]); setNotice('Taluka data for this district is not available in the MRSAC catalog.'); return; }
+    setTalukasList([]);
+    setTalukaError('');
+    if (!district) return;
+    if (!/^\d{1,15}$/.test(district)) { setTalukaError('This district is a preview entry and has no MRSAC ID.'); setNotice('Taluka data for this district is not available in the MRSAC catalog.'); return; }
     let active = true;
-    setLoading('talukas'); setNotice('Loading talukas…');
-    apiGet(`/talukas?district=${encodeURIComponent(district)}`)
-      .then(rows => { if (!Array.isArray(rows)) throw new Error('Taluka data format is invalid.'); if (active) { setTalukasList(rows); setNotice(`${rows.length} talukas available.`); } })
-      .catch(error => { if (active) { setTalukasList([]); setNotice(error.message); } })
-      .finally(() => { if (active) setLoading(''); });
-    return () => { active = false; };
-  }, [district]);
+    const controller = new AbortController();
+    const loadTalukas = async () => {
+      setLoading('talukas'); setNotice('Loading talukas…');
+      let lastError;
+      for (let attempt = 0; attempt < 3 && active; attempt += 1) {
+        try {
+          const rows = await apiGet(`/talukas?district=${encodeURIComponent(district)}`, { signal: controller.signal });
+          if (!Array.isArray(rows)) throw new Error('Taluka data format is invalid.');
+          if (active) { setTalukasList(rows); setNotice(`${rows.length} talukas available.`); }
+          return;
+        } catch (error) {
+          if (!active || controller.signal.aborted) return;
+          lastError = error;
+          if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
+        }
+      }
+      if (active) {
+        const message = lastError?.message || 'Could not load talukas.';
+        setTalukaError(message);
+        setNotice(`Could not load talukas: ${message}`);
+      }
+    };
+    loadTalukas().finally(() => { if (active) setLoading(current => current === 'talukas' ? '' : current); });
+    return () => { active = false; controller.abort(); };
+  }, [district, talukaRetry]);
 
   useEffect(() => {
     if (!district || !taluka) { setVillagesList([]); return; }
@@ -234,7 +256,8 @@ function App() {
       <div className="side-scroll">
         <section className="section village-section"><div className="eyebrow"><span className="live-dot"/> MRSAC DATA API</div><h1>Find your village</h1><p className="subtext">Explore cadastral boundaries across Maharashtra.</p>
           <label>District</label><select value={district} onChange={e => { setDistrict(e.target.value); setTaluka(''); setVillage(''); setLoaded(false); setSelected(null); setSampleData([]); }}><option value="">Select district</option>{districtsList.map(d => <option key={d.id} value={d.id}>{d.name || d.id}</option>)}</select>
-          <label>Taluka</label><select value={taluka} disabled={!district || loading === 'talukas'} onChange={e => { setTaluka(e.target.value); setVillage(''); setLoaded(false); setSelected(null); setSampleData([]); }}><option value="">{loading === 'talukas' ? 'Loading talukas…' : 'Select taluka'}</option>{talukasList.map(t => <option key={t.id} value={t.id}>{t.name || t.id}</option>)}</select>
+          <label>Taluka</label><select value={taluka} disabled={!district || loading === 'talukas' || Boolean(talukaError)} onChange={e => { setTaluka(e.target.value); setVillage(''); setLoaded(false); setSelected(null); setSampleData([]); }}><option value="">{loading === 'talukas' ? 'Loading talukas…' : talukaError ? 'Taluka list unavailable' : 'Select taluka'}</option>{talukasList.map(t => <option key={t.id} value={t.id}>{t.name || t.id}</option>)}</select>
+          {talukaError && /^\d{1,15}$/.test(district) && <button className="text-button" onClick={() => setTalukaRetry(value => value + 1)}>↻ &nbsp; Retry taluka loading</button>}
           <label>Village</label><select value={village} disabled={!taluka || loading === 'villages'} onChange={e => handleVillage(e.target.value)}><option value="">{loading === 'villages' ? 'Loading villages…' : 'Select village'}</option>{villagesList.map(v => <option key={v.id} value={v.id}>{v.name || v.id}</option>)}</select>
           <button className="text-button" onClick={() => { setDistrictsList(fallbackDistricts); setTalukasList([]); setVillagesList([]); setNotice('Catalog cleared. Reload the page to fetch MRSAC metadata again.'); }}>↻ &nbsp; Reset catalog</button>
           <div className="inline-status"><span className="status-check"><Icon name="check" size={13}/></span><span>{notice || 'Choose a village to load its parcel map.'}</span></div>
